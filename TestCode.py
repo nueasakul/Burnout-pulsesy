@@ -4,63 +4,22 @@ import serial
 from pathlib import Path
 from collections import Counter
 from ultralytics import YOLO
-import mysql.connector
 
-# ==================== 1. ตั้งค่า Serial Port & DB ====================
-SERIAL_PORT = 'COM5'   # ⚠️ เปลี่ยนพอร์ต COM ให้ตรงกับ ESP32-C3
+# ==================== ตั้งค่า Serial Port ====================
+SERIAL_PORT = 'COM5'   # ⚠️ เปลี่ยนพอร์ต COM ให้ตรงกับ ESP32
 BAUD_RATE = 115200
 
-DB_CONFIG = {
-    "host": "10.26.1.95",       # IP เครื่องเซิร์ฟเวอร์ phpMyAdmin / MySQL
-    "user": "admin_user",
-    "password": "123456",
-    "database": "my_database",
-    "port": 3306
-}
-
-# ==================== 2. โหลดโมเดล YOLOv8 ====================
+# ==================== 1. โหลดโมเดล YOLOv8 ====================
 BASE_DIR = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "best.pt"
 model = YOLO(str(MODEL_PATH))
 
-# เงื่อนไขเวลาและจำนวนตัวอย่างสแกนหน้า
-VERIFY_DURATION = 3.0   # เวลาสแกนยืนยันใบหน้า
-SAMPLE_INTERVAL = 3.0   # ระยะห่างการเก็บค่า AI (วินาที)
-TARGET_SAMPLES = 5      # จำนวนตัวอย่างสแกนหน้า
+# 🛠️ ปรับแก้เงื่อนไขเวลาและจำนวนตัวอย่างตามที่ต้องการ
+VERIFY_DURATION = 3.0   # ยืนยันตัวตน 3 วินาที
+SAMPLE_INTERVAL = 3.0   # 🛠️ เปลี่ยนระยะห่างเก็บข้อมูลจาก 5s เหลือ 3s
+TARGET_SAMPLES = 5      # 🛠️ เปลี่ยนจำนวนตัวอย่างสแกนหน้าจาก 10 ค่า เหลือ 5 ค่า
 
-# ตัวแปรเก็บข้อมูลผู้ใช้งานปัจจุบันที่แตะบัตรผ่าน
-current_user = {"id": None, "username": "Guest", "uid": None}
-
-# ==================== 3. ฟังก์ชันเช็กบัตร RFID กับ Database ====================
-def verify_rfid(scanned_uid):
-    db = None
-    try:
-        db = mysql.connector.connect(**DB_CONFIG)
-        cursor = db.cursor(dictionary=True)
-
-        sql_query = "SELECT * FROM registered_users WHERE rfid_uid = %s"
-        cursor.execute(sql_query, (scanned_uid,))
-        user = cursor.fetchone()
-
-        if user:
-            username = user.get('username', 'Unknown')
-            user_id = user.get('id')
-            print(f"✅ [AUTH PASS] พบผู้ใช้: {username} (ID: {user_id}) | UID: {scanned_uid}")
-            return True, user_id, username
-        else:
-            print(f"❌ [AUTH DENIED] ไม่พบ UID: {scanned_uid} ในระบบ")
-            return False, None, None
-
-    except mysql.connector.Error as err:
-        print(f"⚠️ เกิดข้อผิดพลาด DB: {err}")
-        return False, None, None
-
-    finally:
-        if db and db.is_connected():
-            cursor.close()
-            db.close()
-
-# ==================== 4. เริ่มต้นเชื่อมต่อ Serial ====================
+# เชื่อมต่อ Serial
 try:
     ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
     ser.reset_input_buffer()
@@ -70,33 +29,17 @@ except Exception as e:
     exit()
 
 print("\n" + "="*60)
-print("🔘 ระบบพร้อมทำงาน! สแกนบัตร RFID หรือ กดปุ่ม START ที่ ESP32...")
+print("🔘 ระบบพร้อมทำงาน! รอกดปุ่ม START ที่บอร์ด ESP32...")
 print("="*60)
 
 # ==================== MAIN LOOP (ทำงานวนรอบรอคำสั่ง) ====================
 while True:
+    # ------------------- สเต็ปที่ 1: รอกดปุ่มเปิดกล้อง -------------------
     if ser.in_waiting > 0:
         line = ser.readline().decode('utf-8', errors='ignore').strip()
         
-        # ------------------- กรณีที่ 1: เช็กบัตร RFID -------------------
-        if line.startswith("RFID_SCAN|"):
-            scanned_uid = line.split("|")[1]
-            print(f"\n🎴 [RFID SCAN] รับค่า UID จาก ESP32: {scanned_uid}")
-            
-            is_valid, u_id, username = verify_rfid(scanned_uid)
-            
-            if is_valid:
-                current_user["id"] = u_id
-                current_user["username"] = username
-                current_user["uid"] = scanned_uid
-                ser.write(b"RFID_OK\n")       # ตอบกลับ ESP32 ให้ผ่าน
-            else:
-                current_user = {"id": None, "username": "Guest", "uid": None}
-                ser.write(b"RFID_DENIED\n")   # ตอบกลับ ESP32 ว่าไม่ผ่าน
-
-        # ------------------- กรณีที่ 2: ปุ่ม START ถูกกด (เปิดกล้อง) -------------------
-        elif line == "SYSTEM_START":
-            print(f"\n🚀 [START] เริ่มต้นการประเมินของผู้ใช้: {current_user['username']}! กำลังเปิดกล้อง...")
+        if line == "SYSTEM_START":
+            print("\n🚀 [START] ได้รับสัญญาณกดปุ่มเริ่ม! กำลังเปิดกล้อง...")
             
             cap = cv2.VideoCapture(0)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
@@ -108,7 +51,7 @@ while True:
             last_sample_time = 0
             is_stopped_by_hw = False
 
-            # ลูปเปิดกล้องสแกน AI
+            # ------------------- สเต็ปที่ 2: ลูปเปิดกล้องสแกน AI -------------------
             while cap.isOpened():
                 if ser.in_waiting > 0:
                     cmd = ser.readline().decode('utf-8', errors='ignore').strip()
@@ -182,7 +125,7 @@ while True:
                 cv2.putText(annotated_frame, status_text, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
                 cv2.imshow("Burnout AI State Detection", annotated_frame)
 
-                # เก็บครบ 5 ค่าแล้ว ปิดกล้อง
+                # เก็บครบ 5 ค่าแล้ว ปิดกล้องเพื่อเตรียมสรุปผล
                 if len(samples) >= TARGET_SAMPLES:
                     print("\n✅ สแกนใบหน้าครบ 5 ค่าเรียบร้อย! ปิดกล้อง...")
                     break
@@ -198,16 +141,16 @@ while True:
             cv2.destroyAllWindows()
 
             if is_stopped_by_hw:
-                print("\n--- รีเซ็ตระบบ รอกดปุ่ม START หรือแตะบัตรใหม่ ---")
+                print("\n--- รีเซ็ตระบบ รอกดปุ่ม START ใหม่ ---")
                 continue
 
-            # คำนวณสรุปผล AI
+            # คำนวณสรุปผลฝั่ง AI (เฉลี่ยจาก 5 ค่า)
             all_states = [s['state'] for s in samples]
             state_counts = Counter(all_states)
             most_common_state, count = state_counts.most_common(1)[0]
             avg_confidence = sum(s['conf_val'] for s in samples) / len(samples)
 
-            # ------------------- รอรับข้อมูล HW_RESULT จาก ESP32 -------------------
+            # ------------------- สเต็ปที่ 3: รอนำเข้า HW_RESULT -------------------
             print("\n⏳ กำลังรอรับข้อมูลแบบประเมิน (3 ข้อ) และชีพจรจาก ESP32...")
             hw_data = None
 
@@ -232,14 +175,12 @@ while True:
                             break
                 time.sleep(0.1)
 
-            # ------------------- แสดงรายงานสรุปผลลัพธ์ -------------------
+            # ------------------- สเต็ปที่ 4: แสดงรายงานสรุป -------------------
             if hw_data:
                 print("\n" + "="*60)
-                print("         📊 รายงานสรุปผลประเมินภาวะ BURNOUT AI (FINAL REPORT)")
+                print("           📊 รายงานสรุปผลประเมินภาวะ BURNOUT AI (FINAL REPORT)")
                 print("="*60)
-                print(f"👤 [ข้อมูลผู้ใช้งาน] : {current_user['username']} (ID: {current_user['id'] or 'N/A'})")
-                print("------------------------------------------------------------")
-                print("🤖 [1. การวิเคราะห์อารมณ์จากใบหน้า - AI (สแกน 5 ค่า)]")
+                print("\n🤖 [1. การวิเคราะห์อารมณ์จากใบหน้า - AI (สแกน 5 ค่า)]")
                 print(f"  • สภาวะหลักที่พบ : {most_common_state} ({count}/{TARGET_SAMPLES} ครั้ง - {count/TARGET_SAMPLES*100:.0f}%)")
                 print(f"  • ความมั่นใจเฉลี่ย : {avg_confidence:.2f}%")
 
@@ -253,8 +194,6 @@ while True:
                 print("  • คำตอบ 3 ข้อที่สุ่มได้ : " + " | ".join([f"Q{i+1}:{ans}" for i, ans in enumerate(hw_data['answers'])]))
                 print("="*60)
 
-                # รีเซ็ต User หลังจบการประเมิน
-                current_user = {"id": None, "username": "Guest", "uid": None}
-                print("\n--- จบการประเมิน รอกดปุ่ม START หรือแตะบัตรใหม่ ---")
+            print("\n--- จบการประเมิน รอกดปุ่ม START เพื่อเริ่มรอบใหม่ ---")
 
     time.sleep(0.05)
