@@ -31,6 +31,7 @@ MAX30105 particleSensor;
 // ==================== Control Variables ====================
 bool isBtnPressed = false;
 bool isRunning = false;
+volatile bool Pulseruning = false;
 
 const int TOTAL_QUESTIONS = 10;  // คลังคำถามทั้งหมดใน SD Card (10 ข้อ)
 const int NUM_ASKED = 3;         // สุ่มนำมาถาม 3 ข้อ
@@ -45,8 +46,8 @@ const unsigned long trackDelays[10] = {
   5000, 3000, 7000, 6000, 5000, 4000, 3000, 5000, 3000, 5000
 };
 
-String MASTER_CARD = "3AB9224A";
-String MUSIC_CARD = "9A2C79A1";
+String MASTER_CARD = "F8A56BE";
+String VISITOR_CARD = "31DC230";
 
 // ==================== Heart Rate & HRV Variables ====================
 const byte HRV_SIZE = 10;
@@ -169,21 +170,29 @@ void loop() {
     unsigned long startWait = millis();
     bool authorized = false;
     while (millis() - startWait < 2000) {
-      if (Serial.available()) {
+      if (Serial.available() || readUID == MASTER_CARD || readUID == VISITOR_CARD) {
         String response = Serial.readStringUntil('\n');
         response.trim();
 
-        if (response == "RFID_OK") {
+        if (response == "RFID_OK" || readUID == MASTER_CARD) {
+          Serial.println("RFID_OK");
           authorized = true;
           break;
+        } else if (response == "RFID_VISITOR" || readUID == VISITOR_CARD) {
+          Serial.println("RFID_VISITOR");
+          isRunning = true;
+          playTrackAndWait(15, 2000);
+          isRunning = false;
+          Serial.println(isRunning);
+          break;
         } else if (response == "RFID_DENIED") {
+          Serial.println("RFID_DENIED");
           authorized = false;
           break;
         }
       }
     }
 
-    // if (readUID == MASTER_CARD) {
     if (authorized) {
       if (!isBtnPressed) {
         isBtnPressed = true;
@@ -200,22 +209,6 @@ void loop() {
         isBtnPressed = false;
       }
     }
-    // if (readUID == MUSIC_CARD) {
-    //   if (!isBtnPressed) {
-    //     isBtnPressed = true;
-    //     delay(50);
-
-    //     if (!isRunning) {
-    //       isRunning = true;
-    //       playTrackAndWait(12, 10000);
-    //     } else {
-    //       resetSystem();
-    //       return;
-    //     }
-    //   } else {
-    //     isBtnPressed = false;
-    //   }
-    // }
   }
   delay(20);
 }
@@ -223,8 +216,38 @@ void loop() {
 void Assessment() {
   // 🟢 ส่งสัญญาณบอก Python ให้เริ่มเปิดกล้อง
   Serial.println("SYSTEM_START");
+  playTrackAndWait(12, 2000);
+
+  while (true) {
+    if (!isRunning) return;
+
+    ButtonState btn = readButtons();
+    if (btn.start && !isBtnPressed) {
+      isBtnPressed = true;
+      resetSystem();
+      while (readButtons().start) {
+        delay(10);
+      }
+      playTrackAndWait(16, 5000);
+      return;
+    }
+
+    if (!btn.start) {
+      isBtnPressed = false;
+    }
+    if (Serial.available()) {
+      String response = Serial.readStringUntil('\n');
+      response.trim();
+      if (response == "END_CAMERA") {
+        break;
+      }
+    }
+    delay(20);
+  }
 
   // รีเซ็ตค่าชีพจรและข้อมูล 3 ข้อก่อนเริ่มเซสชันใหม่
+  Serial.println("เริ่มวัดชีพจร!");
+
   totalBeatSum = 0;
   totalBeatCount = 0;
   hrvCount = 0;
@@ -233,6 +256,15 @@ void Assessment() {
     scores[k] = 0.0;
     attempts[k] = 0;
   }
+  playTrackAndWait(13, 3000);
+  Pulseruning = true;
+  unsigned long startWait = millis();
+  while (millis() - startWait < 30000) {
+    delay(10);
+  }
+  Pulseruning = false;
+
+  Serial.println("วัดชีพจร สำเร็จเเล้ว!");
 
   // สุ่มเลือกคำถาม 3 ข้อจาก 10 ข้อ (Fisher-Yates Shuffle)
   int pool[10] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
@@ -286,6 +318,7 @@ void Assessment() {
 
   // สรุปผลลัพธ์และส่งข้อมูลออกทาง Serial
   if (isRunning) {
+    playTrackAndWait(14, 3000);
     send();
     resetSystem();
   }
@@ -294,10 +327,11 @@ void Assessment() {
 void playTrackAndWait(int trackNumber, unsigned long delayTime) {
   if (!isRunning) return;
 
-  // Serial.print("กำลังเล่นไฟล์ที่: ");
-  // Serial.println(trackNumber);
+  Serial.print("กำลังเล่นไฟล์ที่: ");
+  Serial.println(trackNumber);
+  return;
 
-  myDFPlayer.play(trackNumber);
+  // myDFPlayer.play(trackNumber);
 
   unsigned long startTrackTime = millis();
   while (millis() - startTrackTime < delayTime) {
@@ -306,11 +340,11 @@ void playTrackAndWait(int trackNumber, unsigned long delayTime) {
     ButtonState btn = readButtons();
     if (btn.start && !isBtnPressed) {
       isBtnPressed = true;
-      // Serial.println("กำลังเล่นเพลง กำลังออก");
       resetSystem();
       while (readButtons().start) {
-        delay(10);
+       delay(10);
       }
+      playTrackAndWait(16, 5000);
       return;
     }
 
@@ -342,6 +376,7 @@ bool wait_input_with_timeout(int i) {
       while (readButtons().start) {
         delay(10);
       }
+      playTrackAndWait(16, 5000);
       return false;  // แก้ไขจาก return; เฉยๆ เป็น return false ให้ถูกต้องตามชนิด bool
     }
     if (!btn.start) {
@@ -401,7 +436,6 @@ void send() {
   } else {
     sessionAvgBpm = 0.0;
   }
-
   float totalScore = 0;
   for (int k = 0; k < NUM_ASKED; k++) {
     totalScore += scores[k];
@@ -430,6 +464,7 @@ void send() {
 void resetSystem() {
   isRunning = false;
   isBtnPressed = false;
+  Pulseruning = false;
   myDFPlayer.stop();
   for (int k = 0; k < NUM_ASKED; k++) {
     answers[k] = 0;
@@ -445,50 +480,52 @@ void resetSystem() {
 // ==================== FreeRTOS Background Task ====================
 void breathingTask(void *pvParameters) {
   while (1) {
-    long irValue = 0;
+    if (Pulseruning) {
+      long irValue = 0;
 
-    // ขอสิทธิ์ใช้ I2C ก่อนอ่านค่าจากเซนเซอร์
-    if (i2cMutex != NULL && xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-      irValue = particleSensor.getIR();
-      xSemaphoreGive(i2cMutex);  // คืนสิทธิ์การใช้ I2C
-    }
+      // ขอสิทธิ์ใช้ I2C ก่อนอ่านค่าจากเซนเซอร์
+      if (i2cMutex != NULL && xSemaphoreTake(i2cMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+        irValue = particleSensor.getIR();
+        xSemaphoreGive(i2cMutex);  // คืนสิทธิ์การใช้ I2C
+      }
 
-    if (irValue > 50000) {
-      if (checkForBeat(irValue) == true) {
-        unsigned long currentMicros = micros();
-        float delta = (currentMicros - lastBeat) / 1000.0;
-        lastBeat = currentMicros;
-        beatsPerMinute = 60.0 / (delta / 1000.0);
+      if (irValue > 50000) {
+        if (checkForBeat(irValue) == true) {
+          unsigned long currentMicros = micros();
+          float delta = (currentMicros - lastBeat) / 1000.0;
+          lastBeat = currentMicros;
+          beatsPerMinute = 60.0 / (delta / 1000.0);
 
-        if (beatsPerMinute < 150.0 && beatsPerMinute > 50.0) {
-          totalBeatSum += beatsPerMinute;
-          totalBeatCount++;
+          if (beatsPerMinute < 150.0 && beatsPerMinute > 50.0) {
+            totalBeatSum += beatsPerMinute;
+            totalBeatCount++;
 
-          if (hrvCount < HRV_SIZE) {
-            rrIntervals[hrvCount++] = delta;
-          } else {
-            for (byte i = 0; i < HRV_SIZE - 1; i++) {
-              rrIntervals[i] = rrIntervals[i + 1];
+            if (hrvCount < HRV_SIZE) {
+              rrIntervals[hrvCount++] = delta;
+            } else {
+              for (byte i = 0; i < HRV_SIZE - 1; i++) {
+                rrIntervals[i] = rrIntervals[i + 1];
+              }
+              rrIntervals[HRV_SIZE - 1] = delta;
             }
-            rrIntervals[HRV_SIZE - 1] = delta;
-          }
 
-          if (hrvCount >= 2) {
-            float sumSquaredDiff = 0.0;
-            for (byte i = 0; i < hrvCount - 1; i++) {
-              float diff = rrIntervals[i + 1] - rrIntervals[i];
-              sumSquaredDiff += (diff * diff);
+            if (hrvCount >= 2) {
+              float sumSquaredDiff = 0.0;
+              for (byte i = 0; i < hrvCount - 1; i++) {
+                float diff = rrIntervals[i + 1] - rrIntervals[i];
+                sumSquaredDiff += (diff * diff);
+              }
+              rmssd = sqrt(sumSquaredDiff / (hrvCount - 1));
+              float rawScore = ((60.0 - rmssd) / 45.0) * 100.0;
+              hrvScore = (int)constrain(rawScore, 0.0, 100.0);
             }
-            rmssd = sqrt(sumSquaredDiff / (hrvCount - 1));
-            float rawScore = ((60.0 - rmssd) / 45.0) * 100.0;
-            hrvScore = (int)constrain(rawScore, 0.0, 100.0);
           }
         }
+      } else {
+        beatsPerMinute = 0;
       }
-    } else {
-      beatsPerMinute = 0;
-    }
 
-    vTaskDelay(pdMS_TO_TICKS(10));
+      vTaskDelay(pdMS_TO_TICKS(10));
+    }
   }
 }
