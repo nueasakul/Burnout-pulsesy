@@ -13,8 +13,8 @@ try:
     cursor = db.cursor()
 
     # 2. กำหนดข้อมูลที่ต้องการเพิ่ม (ปรับเปลี่ยนค่าได้ตามต้องการ)
-    new_rfid = "9A2C79A1"
-    new_username = "พี่บี"
+    new_rfid = "9A461B4A"
+    new_username = "hopโอปอ"
 
     # 3. เขียนคำสั่ง SQL สำหรับ INSERT (ไม่ต้องใส่ id เพราะปกติระบบจะ Auto Increment ให้เอง)
     sql_query = (

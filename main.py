@@ -29,9 +29,11 @@ SAMPLE_INTERVAL = 3.0   # ระยะห่างการเก็บค่า
 TARGET_SAMPLES = 5      # จำนวนตัวอย่างสแกนหน้า
 
 # ตัวแปรเก็บข้อมูลผู้ใช้งานปัจจุบันที่แตะบัตรผ่าน
-current_user = {"id": None, "username": "Guest", "uid": None}
+current_user = {"hierarchy": "None", "username": "Guest", "uid": None}
 
 # ==================== 3. ฟังก์ชันเช็กบัตร RFID กับ Database ====================
+
+
 def verify_rfid(scanned_uid):
     db = None
     try:
@@ -44,9 +46,20 @@ def verify_rfid(scanned_uid):
 
         if user:
             username = user.get('username', 'Unknown')
-            user_id = user.get('id')
-            print(f"✅ [AUTH PASS] พบผู้ใช้: {username} (ID: {user_id}) | UID: {scanned_uid}")
-            return True, user_id, username
+            Hierarchy = 'registered_users'
+            print(
+                f"✅ [registered_users] พบผู้ใช้: {username} (ID: {Hierarchy}) | UID: {scanned_uid}")
+            return True, Hierarchy, username
+        
+        sql_query = "SELECT * FROM visitor_cards WHERE rfid_uid = %s"
+        cursor.execute(sql_query, (scanned_uid,))
+        user = cursor.fetchone()
+        if user:
+            username = user.get('username', 'Unknown')
+            Hierarchy = 'visitor_cards'
+            print(
+                f"✅ [visitor_cards] พบผู้ใช้: {username} (ID: {Hierarchy}) | UID: {scanned_uid}")
+            return True, Hierarchy, username
         else:
             print(f"❌ [AUTH DENIED] ไม่พบ UID: {scanned_uid} ในระบบ")
             return False, None, None
@@ -60,6 +73,7 @@ def verify_rfid(scanned_uid):
             cursor.close()
             db.close()
 
+
 # ==================== 4. เริ่มต้นเชื่อมต่อ Serial ====================
 try:
     ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
@@ -70,7 +84,7 @@ except Exception as e:
     exit()
 
 print("\n" + "="*60)
-print("🔘 ระบบพร้อมทำงาน! สแกนบัตร RFID หรือ กดปุ่ม START ที่ ESP32...")
+print("🔘 ระบบพร้อมทำงาน! สแกนบัตร RFID")
 print("="*60)
 
 # ==================== MAIN LOOP (ทำงานวนรอบรอคำสั่ง) ====================
@@ -78,26 +92,37 @@ while True:
     if ser.in_waiting > 0:
         line = ser.readline().decode('utf-8', errors='ignore').strip()
         
+        if line:
+            print(f"📩 [ESP32 Log]: {line}")
+
         # ------------------- กรณีที่ 1: เช็กบัตร RFID -------------------
         if line.startswith("RFID_SCAN|"):
             scanned_uid = line.split("|")[1]
             print(f"\n🎴 [RFID SCAN] รับค่า UID จาก ESP32: {scanned_uid}")
-            
-            is_valid, u_id, username = verify_rfid(scanned_uid)
-            
+
+            is_valid, hierarchy, username = verify_rfid(scanned_uid)
+
             if is_valid:
-                current_user["id"] = u_id
+                current_user["hierarchy"] = hierarchy
                 current_user["username"] = username
                 current_user["uid"] = scanned_uid
-                ser.write(b"RFID_OK\n")       # ตอบกลับ ESP32 ให้ผ่าน
+                # ตรวจสอบว่าถ้าเป็น Visitor ให้ส่งสัญญาณแยก
+                if hierarchy == "visitor_cards":
+                    ser.write(b"RFID_VISITOR\n")    # ตอบกลับ ESP32 ว่าเป็น Visitor
+                    print(f"ตอบกลับ ESP32 ว่าเป็น RFID_VISITOR")
+                else:
+                    ser.write(b"RFID_OK\n")         # ตอบกลับ ESP32 ให้ผ่าน (ผู้ใช้งานทั่วไป)
+                    print(f"ตอบกลับ ESP32 ว่าเป็นผู้ใช้งานทั่วไป")
             else:
-                current_user = {"id": None, "username": "Guest", "uid": None}
+                current_user = {"hierarchy": "None", "username": "Guest", "uid": None}
                 ser.write(b"RFID_DENIED\n")   # ตอบกลับ ESP32 ว่าไม่ผ่าน
+                print(f"ตอบกลับ ESP32 ว่าเป็น RFID_DENIED")
 
-        # ------------------- กรณีที่ 2: ปุ่ม START ถูกกด (เปิดกล้อง) -------------------
+        # ------------------- กรณีที่ 2: START (เปิดกล้อง) -------------------
         elif line == "SYSTEM_START":
-            print(f"\n🚀 [START] เริ่มต้นการประเมินของผู้ใช้: {current_user['username']}! กำลังเปิดกล้อง...")
-            
+            print(
+                f"\n🚀 [START] เริ่มต้นการประเมินของผู้ใช้: {current_user['username']}! กำลังเปิดกล้อง...")
+
             cap = cv2.VideoCapture(0)
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
@@ -143,8 +168,8 @@ while True:
                     # ⚠️ ถ้าเจอ out_of_range ให้ขึ้นเตือน และหยุดนับเวลา
                     if detected_class == "out_of_range":
                         status_text = "⚠️ Out of Range! Please adjust face position..."
-                        color = (0, 0, 255) # ตัวหนังสือสีแดง
-                        face_detected_start = None # รีเซ็ตเวล่ายืนยันหน้า
+                        color = (0, 0, 255)  # ตัวหนังสือสีแดง
+                        face_detected_start = None  # รีเซ็ตเวล่ายืนยันหน้า
                     else:
                         # กรณีใบหน้าอยู่ในระยะปกติ
                         if face_detected_start is None:
@@ -160,9 +185,11 @@ while True:
                                 last_sample_time = current_time - SAMPLE_INTERVAL
                         else:
                             time_since_last_sample = current_time - last_sample_time
-                            countdown = max(0.0, SAMPLE_INTERVAL - time_since_last_sample)
+                            countdown = max(
+                                0.0, SAMPLE_INTERVAL - time_since_last_sample)
                             status_text = f"Verified! Sample in: {countdown:.1f}s | Progress: [{len(samples)}/{TARGET_SAMPLES}]"
-                            color = (0, 0, 255) if countdown > 0 else (0, 255, 0)
+                            color = (0, 0, 255) if countdown > 0 else (
+                                0, 255, 0)
 
                             if time_since_last_sample >= SAMPLE_INTERVAL:
                                 sample_data = {
@@ -174,7 +201,8 @@ while True:
                                 }
                                 samples.append(sample_data)
                                 last_sample_time = current_time
-                                print(f"📌 [AI Sample {len(samples)}/{TARGET_SAMPLES}] สภาวะ: {detected_class} ({detected_conf*100:.1f}%)")
+                                print(
+                                    f"📌 [AI Sample {len(samples)}/{TARGET_SAMPLES}] สภาวะ: {detected_class} ({detected_conf*100:.1f}%)")
                 else:
                     face_detected_start = None
                     if not is_verified:
@@ -182,12 +210,14 @@ while True:
                         color = (0, 0, 255)
                     else:
                         time_since_last_sample = current_time - last_sample_time
-                        countdown = max(0.0, SAMPLE_INTERVAL - time_since_last_sample)
+                        countdown = max(0.0, SAMPLE_INTERVAL -
+                                        time_since_last_sample)
                         status_text = f"Face Lost! Waiting... | Progress: [{len(samples)}/{TARGET_SAMPLES}]"
                         color = (0, 0, 255)
                 # ==================================================================
 
-                cv2.putText(annotated_frame, status_text, (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+                cv2.putText(annotated_frame, status_text, (30, 50),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
                 cv2.imshow("Burnout AI State Detection", annotated_frame)
 
                 # เก็บครบ 5 ค่าแล้ว ปิดกล้อง
@@ -199,14 +229,16 @@ while True:
                     print("\n⚠️ ปิดโปรแกรมโดยผู้ใช้")
                     cap.release()
                     cv2.destroyAllWindows()
+                    ser.write(b"END_CAMERA\n")   # ตอบกลับ ESP32 END_CAMERA
                     ser.close()
                     exit()
 
             cap.release()
             cv2.destroyAllWindows()
+            ser.write(b"END_CAMERA\n")   # ตอบกลับ ESP32 END_CAMERA
 
             if is_stopped_by_hw:
-                print("\n--- รีเซ็ตระบบ รอกดปุ่ม START หรือแตะบัตรใหม่ ---")
+                print("\n--- รีเซ็ตระบบ กรุณาแตะบัตรใหม่ ---")
                 continue
 
             # คำนวณสรุปผล AI
@@ -222,9 +254,15 @@ while True:
             while True:
                 if ser.in_waiting > 0:
                     line_hw = ser.readline().decode('utf-8', errors='ignore').strip()
-                    
+
+                    if line_hw:
+                                print(f"📩 [ESP32 Log]: {line_hw}")
+
                     if line_hw == "SYSTEM_STOP":
+                        print("\n" + "="*60)
                         print("🛑 [STOP] ถูกสั่งหยุดระบบระหว่างทำแบบประเมิน!")
+                        print("]\nกรุณาแตะบัตรใหม่! สแกนบัตร RFID ที่ ESP32...")
+                        print("="*60)
                         break
 
                     if line_hw.startswith("HW_RESULT|"):
@@ -245,24 +283,29 @@ while True:
                 print("\n" + "="*60)
                 print("         📊 รายงานสรุปผลประเมินภาวะ BURNOUT AI (FINAL REPORT)")
                 print("="*60)
-                print(f"👤 [ข้อมูลผู้ใช้งาน] : {current_user['username']} (ID: {current_user['id'] or 'N/A'})")
+                print(
+                    f"👤 [ข้อมูลผู้ใช้งาน] : {current_user['username']} [ตำแหน่ง]: {current_user['hierarchy'] or 'N/A'})")
                 print("------------------------------------------------------------")
                 print("🤖 [1. การวิเคราะห์อารมณ์จากใบหน้า - AI (สแกน 5 ค่า)]")
-                print(f"  • สภาวะหลักที่พบ : {most_common_state} ({count}/{TARGET_SAMPLES} ครั้ง - {count/TARGET_SAMPLES*100:.0f}%)")
+                print(
+                    f"  • สภาวะหลักที่พบ : {most_common_state} ({count}/{TARGET_SAMPLES} ครั้ง - {count/TARGET_SAMPLES*100:.0f}%)")
                 print(f"  • ความมั่นใจเฉลี่ย : {avg_confidence:.2f}%")
 
                 print("\n🫀 [2. การวิเคราะห์ค่าทางกายภาพ - Pulse & HRV]")
-                print(f"  • อัตราการเต้นหัวใจเฉลี่ย : {hw_data['avg_bpm']:.1f} BPM")
-                print(f"  • ค่าความแปรผันหัวใจ (RMSSD) : {hw_data['rmssd']:.1f} ms")
+                print(
+                    f"  • อัตราการเต้นหัวใจเฉลี่ย : {hw_data['avg_bpm']:.1f} BPM")
+                print(
+                    f"  • ค่าความแปรผันหัวใจ (RMSSD) : {hw_data['rmssd']:.1f} ms")
                 print(f"  • คะแนนความเครียด HRV : {hw_data['hrv_score']}/100")
 
                 print("\n📝 [3. ผลการตอบแบบประเมิน (สุ่ม 3 ข้อ)]")
                 print(f"  • คะแนนเฉลี่ยแบบสอบถาม : {hw_data['q_score']:.2f}%")
-                print("  • คำตอบ 3 ข้อที่สุ่มได้ : " + " | ".join([f"Q{i+1}:{ans}" for i, ans in enumerate(hw_data['answers'])]))
+                print("  • คำตอบ 3 ข้อที่สุ่มได้ : " +
+                      " | ".join([f"Q{i+1}:{ans}" for i, ans in enumerate(hw_data['answers'])]))
                 print("="*60)
 
                 # รีเซ็ต User หลังจบการประเมิน
-                current_user = {"id": None, "username": "Guest", "uid": None}
-                print("\n--- จบการประเมิน รอกดปุ่ม START หรือแตะบัตรใหม่ ---")
+                current_user = {"hierarchy": "None", "username": "Guest", "uid": None}
+                print("\n--- จบการประเมิน กรุณาแตะบัตรใหม่ ---")
 
     time.sleep(0.05)
