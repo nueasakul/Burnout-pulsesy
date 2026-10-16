@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Burnout Pulse AI | Admin</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+Thai:wght@400;500;600;700&family=Kanit:wght@600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+  <style>
+    .header-report-row {display:flex;align-items:center;justify-content:flex-end;gap:14px;flex-wrap:wrap;margin:-8px 0 10px}
+    .header-report-row .clock {margin:0;width:auto;flex-shrink:0}
+    .report-dashboard-button {display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:10px 16px;border-radius:10px;background:#1d4ed8;color:white;text-decoration:none;font-size:14px;font-weight:600}
+    .report-dashboard-button:hover,.report-dashboard-button:focus-visible {background:#1e40af;color:#fff}
+    @media(max-width:560px){.header-report-row{gap:10px;margin-top:0}.report-dashboard-button{padding:8px 12px;font-size:12px}}
+  </style>
+</head>
+<body>
+ 
+  <!-- แถบด้านบน (แสดงเฉพาะหน้าจอเล็ก) -->
+  <header class="topbar">
+    <button class="icon-btn" id="menuBtn" aria-label="เปิดเมนู" aria-controls="sidebar" aria-expanded="false">
+      <span data-icon="menu"></span>
+    </button>
+    <div class="brand brand--small">
+      <span class="brand__logo" data-icon="flame"></span>
+      <span class="brand__name">Burnout Pulse AI</span>
+    </div>
+  </header>
+ 
+  <div class="backdrop" id="backdrop" hidden></div>
+ 
+  <!-- หน้าเข้าสู่ระบบ -->
+  <div class="login" id="login" hidden>
+    <form class="login__card" id="loginForm" novalidate>
+      <div class="brand">
+        <span class="brand__logo" data-icon="flame"></span>
+        <span class="brand__name">Burnout Pulse AI</span>
+      </div>
+      <h1 class="login__title">เข้าสู่ระบบ</h1>
+      <div class="login__error" id="loginError" role="alert" hidden></div>
+      <div class="field">
+        <label for="l-user">ชื่อผู้ใช้</label>
+        <input id="l-user" name="username" autocomplete="username" autocapitalize="off">
+      </div>
+      <div class="field">
+        <label for="l-pass">รหัสผ่าน</label>
+        <input id="l-pass" name="password" type="password" autocomplete="current-password">
+      </div>
+      <button class="btn btn--primary login__submit" type="submit">เข้าสู่ระบบ</button>
+      <p class="login__hint" id="loginHint" hidden></p>
+    </form>
+  </div>
+ 
+  <!-- แถบเมนูด้านข้าง -->
+  <aside class="sidebar" id="sidebar">
+    <a class="brand" href="#home">
+      <span class="brand__logo" data-icon="flame"></span>
+      <span class="brand__name">Burnout Pulse AI</span>
+    </a>
+    <nav class="nav" aria-label="เมนูหลัก">
+      <a class="nav__item" href="#home"      data-route="home"><span data-icon="home"></span>หน้าหลัก</a>
+      <a class="nav__item" href="#employees" data-route="employees"><span data-icon="users"></span>พนักงาน</a>
+      <a class="nav__item" href="#visitors" data-route="visitors"><span data-icon="user"></span>ผู้มาเยือน</a>
+      <a class="nav__item" href="#database"  data-route="database"><span data-icon="database"></span>ฐานข้อมูล</a>
+    </nav>
+    <div class="sidebar__foot" id="userBox" hidden>
+      <div class="sidebar__user"><span class="avatar" id="userAvatar"></span><span id="userName"></span></div>
+      <button class="btn" id="logoutBtn" type="button"><span data-icon="logout"></span>ออกจากระบบ</button>
+    </div>
+  </aside>
+ 
+  <!-- เนื้อหาหลัก (ถูกเรนเดอร์โดย script.js) -->
+  <main class="main" id="main">
+    <!-- วันที่-เวลาปัจจุบัน มุมขวาบน (อัปเดตทุกวินาทีโดย script.js) -->
+    <div class="header-report-row">
+      <a class="report-dashboard-button" href="./db/dbb.php" target="_blank" rel="noopener noreferrer"><span data-icon="external"></span>Report Dashboard</a>
+      <div class="clock" aria-hidden="true">
+        <div>Date: <span id="clockDate">--/--/----</span></div>
+        <div>Time: <span id="clockTime">--:--:-- --</span></div>
+      </div>
+    </div>
+ 
+    <div class="page-head">
+      <div class="page-head__text">
+        <h1 id="pageTitle">Admin | Home page</h1>
+        <p id="pageSubtitle" class="page-head__sub" hidden></p>
+      </div>
+      <div class="page-head__actions" id="pageActions"></div>
+    </div>
+ 
+    <div class="tabs" id="tabs" role="tablist"></div>
+ 
+    <div id="content" aria-live="polite"></div>
+ 
+    <footer class="page-foot" id="pageFoot">
+      <span>ระบบจัดการฐานข้อมูล Burnout Pulse AI</span>
+    
+	<a
+    href="https://mail.consolutechcloud.com/phpMyAdmin/index.php?route=/database/structure&amp;db=st67010999_burnout"
+    class="link"
+    id="phpLinkFoot"
+    target="_blank"
+    rel="noopener noreferrer"
+>
+    <span data-icon="external"></span>
+    <span>เข้าสู่ phpMyAdmin</span>
+</a>
+    </footer>
+  </main>
+ 
+  <!-- กล่องโต้ตอบ (เพิ่ม/แก้ไข/ลบ) -->
+  <div class="modal" id="modal" hidden>
+    <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal__head">
+        <h2 id="modalTitle"></h2>
+        <button class="icon-btn" id="modalClose" aria-label="ปิด"><span data-icon="x"></span></button>
+      </div>
+      <div class="modal__body" id="modalBody"></div>
+    </div>
+  </div>
+ 
+  <div class="toast" id="toast" role="status" hidden></div>
+ 
+  <script src="config.js"></script>
+  <script src="script.js?v=visitor-fixed-20261011"></script>
+</body>
+</html>
