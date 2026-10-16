@@ -3,386 +3,252 @@
 #include "MAX30105.h"
 #include "heartRate.h"
 #include "DFRobotDFPlayerMini.h"
+#include <SPI.h>
+#include <MFRC522.h>
 
 // ==================== Pin Definitions ====================
-int BUTTON_START = 5;
-int BUTTON_HIGH = 8;
-int BUTTON_MID = 9;
-int BUTTON_LOW = 10;
+#define LED1_PIN    25
+#define LED2_PIN    26
+#define LED3_PIN    27
+#define RELAY_PIN   33
 
-#define SDA_PIN 6
-#define SCL_PIN 7
+#define SDA_PIN     21
+#define SCL_PIN     22
 
-#define DFPLAYER_RX 1  // ESP32 RX <- DFPlayer TX
-#define DFPLAYER_TX 0  // ESP32 TX -> DFPlayer RX
+#define DFPLAYER_RX 16  // ESP32 RX2 <- DFPlayer TX
+#define DFPLAYER_TX 17  // ESP32 TX2 -> DFPlayer RX
+
+#define SS_PIN      5   // SDA / CS
+#define RST_PIN     4   // RST
+#define SCK_PIN     18  // SCK
+#define MISO_PIN    15  // MISO
+#define MOSI_PIN    19  // MOSI
 
 // ==================== Hardware Objects ====================
+MFRC522 mfrc522(SS_PIN, RST_PIN);
 HardwareSerial mySerial(1);
 DFRobotDFPlayerMini myDFPlayer;
 MAX30105 particleSensor;
 
-// ==================== Control Variables ====================
-bool isBtnPressed = false;
-bool isRunning = false;
+uint8_t pcfAddress = 0x27;
 
-const int TOTAL_QUESTIONS = 10;  // จำนวนคลังคำถามทั้งหมดใน SD Card (10 ข้อ)
-const int NUM_ASKED = 3;         // สุ่มนำมาถามแค่ 3 ข้อ
+// ตัวแปรสำหรับเช็กการกดปุ่ม (Edge Detection)
+bool lastStart = false, lastHigh = false, lastMid = false, lastLow = false;
 
-int selectedQ[NUM_ASKED];                     // เก็บ Index ข้อที่สุ่มเลือกได้ (0-9)
-int answers[NUM_ASKED] = { 0, 0, 0 };         // คำตอบ 3 ข้อ (0 = Timeout, 1 = LOW, 2 = MID, 3 = HIGH)
-float scores[NUM_ASKED] = { 0.0, 0.0, 0.0 };  // คะแนน 3 ข้อ
-int attempts[NUM_ASKED] = { 0, 0, 0 };        // จำนวนครั้งที่ถาม (สูงสุด 2 รอบ)
+// ตัวแปรสำหรับหน่วงเวลาพิมพ์ค่า MAX30105
+unsigned long lastMaxPrint = 0;
+unsigned long lastBeatTime = 0;
 
-// ระยะเวลาเล่นเสียงบังคับฟังของคำถามแต่ละข้อ (ข้อ 1 - 10)
-const unsigned long trackDelays[10] = {
-  5000, 3000, 7000, 6000, 5000, 4000, 3000, 5000, 3000, 5000
-};
+// ==================== Helper Functions ====================
+void testButtons() {
+  Wire.requestFrom((int)pcfAddress, 1);
+  if (Wire.available()) {
+    uint8_t pinData = Wire.read();
+    bool btnStart = !(pinData & (1 << 4)); // P4
+    bool btnHigh  = !(pinData & (1 << 5)); // P5
+    bool btnMid   = !(pinData & (1 << 6)); // P6
+    bool btnLow   = !(pinData & (1 << 7)); // P7
 
-// ==================== Heart Rate & HRV Variables ====================
-const byte HRV_SIZE = 10;
-float rrIntervals[HRV_SIZE];
-byte hrvCount = 0;
+    if (btnStart && !lastStart) Serial.println("🔘 [BUTTON] กดปุ่ม: START (P4)");
+    if (btnHigh  && !lastHigh)  Serial.println("🔘 [BUTTON] กดปุ่ม: HIGH  (P5)");
+    if (btnMid   && !lastMid)   Serial.println("🔘 [BUTTON] กดปุ่ม: MID   (P6)");
+    if (btnLow   && !lastLow)   Serial.println("🔘 [BUTTON] กดปุ่ม: LOW   (P7)");
 
-unsigned long lastBeat = 0;
-float beatsPerMinute = 0;
+    lastStart = btnStart;
+    lastHigh  = btnHigh;
+    lastMid   = btnMid;
+    lastLow   = btnLow;
+  }
+}
 
-unsigned long totalBeatSum = 0;
-unsigned int totalBeatCount = 0;
-float sessionAvgBpm = 0.0;
-float rmssd = 0.0;
-int hrvScore = 0;
+void testRFID() {
+  if (mfrc522.PICC_IsNewCardPresent() && mfrc522.PICC_ReadCardSerial()) {
+    String readUID = "";
+    for (byte i = 0; i < mfrc522.uid.size; i++) {
+      if (mfrc522.uid.uidByte[i] < 0x10) readUID += "0";
+      readUID += String(mfrc522.uid.uidByte[i], HEX);
+    }
+    readUID.toUpperCase();
+    readUID.trim();
 
-// ==================== Function Declarations ====================
-void Assessment();
-void playTrackAndWait(int trackNumber, unsigned long delayTime);
-bool wait_input_with_timeout(int i);
-void send();
-void resetSystem();
-void breathingTask(void *pvParameters);
+    Serial.print("🎴 [RFID SCAN] อ่านค่า UID สำเร็จ: ");
+    Serial.println(readUID); 
 
+    mfrc522.PICC_HaltA();
+    mfrc522.PCD_StopCrypto1();
+  }
+}
+
+void testMAX30105() {
+  long irValue = particleSensor.getIR();
+
+  if (irValue > 50000) {
+    if (checkForBeat(irValue)) {
+      unsigned long currentMicros = micros();
+      float delta = (currentMicros - lastBeatTime) / 1000.0;
+      lastBeatTime = currentMicros;
+      float bpm = 60.0 / (delta / 1000.0);
+
+      if (bpm > 50 && bpm < 150) {
+        Serial.print("💓 [MAX30105] ตรวจพบจังหวะหัวใจ! BPM: ");
+        Serial.print(bpm, 1);
+        Serial.print(" | IR: ");
+        Serial.println(irValue);
+      }
+    } else if (millis() - lastMaxPrint > 1000) {
+      Serial.print("🫀 [MAX30105] วางนิ้วอยู่... IR Value: ");
+      Serial.println(irValue);
+      lastMaxPrint = millis();
+    }
+  } else if (millis() - lastMaxPrint > 3000) {
+    // แจ้งเตือนเมื่อยังไม่วางนิ้วทุกๆ 3 วินาที
+    Serial.println("⚠️ [MAX30105] รอตาบนิ้วบนเซนเซอร์...");
+    lastMaxPrint = millis();
+  }
+}
+
+void printMenu() {
+  Serial.println("\n==================================================");
+  Serial.println("         🛠️ ESP32 HARDWARE DIAGNOSTIC TEST       ");
+  Serial.println("==================================================");
+  Serial.println("1. 🔘 ปุ่มกด PCF8574  : กดปุ่มที่บอร์ดเพื่อทดสอบ");
+  Serial.println("2. 🎴 เครื่องอ่าน RFID : แตะบัตรที่ RC522 เพื่ออ่าน UID");
+  Serial.println("3. 🫀 เซนเซอร์วัดชีพจร  : วางนิ้วบน MAX30105 เพื่อดูค่า IR/BPM");
+  Serial.println("4. 🔊 DFPlayer เสียง  : พิมพ์เลขเพลง (เช่น 1, 11, 15) หรือ 'stop'");
+  Serial.println("5. 💡 ไฟ LED / Relay  : พิมพ์ 'led1', 'led2', 'led3', 'ledall' หรือ 'relay'");
+  Serial.println("==================================================\n");
+}
+
+void handleSerialCommands() {
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('\n');
+    cmd.trim();
+
+    if (cmd.length() == 0) return;
+
+    if (cmd.equalsIgnoreCase("stop")) {
+      myDFPlayer.stop();
+      Serial.println("🔊 [DFPLAYER] สั่งหยุดเล่นเสียงเรียบร้อย");
+    } 
+    // 🟢 [สั่งแยกไฟ LED ทีละดวง]
+    else if (cmd.equalsIgnoreCase("led1")) {
+      static bool led1State = false;
+      led1State = !led1State;
+      digitalWrite(LED1_PIN, led1State);
+      Serial.print("💡 [LED 1 - GPIO 27] สถานะ: ");
+      Serial.println(led1State ? "เปิด (HIGH)" : "ปิด (LOW)");
+    } 
+    else if (cmd.equalsIgnoreCase("led2")) {
+      static bool led2State = false;
+      led2State = !led2State;
+      digitalWrite(LED2_PIN, led2State);
+      Serial.print("💡 [LED 2 - GPIO 26] สถานะ: ");
+      Serial.println(led2State ? "เปิด (HIGH)" : "ปิด (LOW)");
+    } 
+    else if (cmd.equalsIgnoreCase("led3")) {
+      static bool led3State = false;
+      led3State = !led3State;
+      digitalWrite(LED3_PIN, led3State);
+      Serial.print("💡 [LED 3 - GPIO 25] สถานะ: ");
+      Serial.println(led3State ? "เปิด (HIGH)" : "ปิด (LOW)");
+    } 
+    // 🟢 [สั่งเปิด/ปิด ทั้ง 3 ดวงพร้อมกัน]
+    else if (cmd.equalsIgnoreCase("led") || cmd.equalsIgnoreCase("ledall")) {
+      static bool ledAllState = false;
+      ledAllState = !ledAllState;
+      digitalWrite(LED1_PIN, ledAllState);
+      digitalWrite(LED2_PIN, ledAllState);
+      digitalWrite(LED3_PIN, ledAllState);
+      Serial.print("💡 [LED ALL] เปลี่ยนสถานะทุกดวงเป็น: ");
+      Serial.println(ledAllState ? "เปิด (HIGH)" : "ปิด (LOW)");
+    } 
+    else if (cmd.equalsIgnoreCase("relay")) {
+      static bool relayState = false;
+      relayState = !relayState;
+      digitalWrite(RELAY_PIN, relayState);
+      Serial.print("⚡ [RELAY TEST] เปลี่ยนสถานะ Relay เป็น: ");
+      Serial.println(relayState ? "เปิด (HIGH)" : "ปิด (LOW)");
+    } 
+    else if (cmd.equalsIgnoreCase("help")) {
+      printMenu();
+    } 
+    else if (cmd.toInt() > 0) {
+      int trackNum = cmd.toInt();
+      Serial.print("🔊 [DFPLAYER] กำลังทดสอบสั่งเล่นไฟล์เพลงที่: ");
+      Serial.println(trackNum);
+      myDFPlayer.play(trackNum);
+    } 
+    else {
+      Serial.println("❌ คำสั่งไม่ถูกต้อง! พิมพ์ 'led1', 'led2', 'led3', 'ledall', 'relay', เลขเพลง หรือ 'help'");
+    }
+  }
+}
+
+// ==================== Setup & Loop ====================
 void setup() {
   Serial.begin(115200);
   mySerial.begin(9600, SERIAL_8N1, DFPLAYER_RX, DFPLAYER_TX);
 
-  pinMode(BUTTON_START, INPUT_PULLUP);
-  pinMode(BUTTON_HIGH, INPUT_PULLUP);
-  pinMode(BUTTON_MID, INPUT_PULLUP);
-  pinMode(BUTTON_LOW, INPUT_PULLUP);
+  // 1. ตั้งค่าดิจิทัลเอาต์พุต
+  pinMode(LED1_PIN, OUTPUT);
+  pinMode(LED2_PIN, OUTPUT);
+  pinMode(LED3_PIN, OUTPUT);
+  pinMode(RELAY_PIN, OUTPUT);
 
-  // สุ่ม Seed ตัวเลข
-  randomSeed(esp_random());
-
-  // 1. เริ่มต้น I2C และ MAX30105
+  // 2. เริ่มต้น I2C และ PCF8574
   Wire.begin(SDA_PIN, SCL_PIN);
-  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) {
-    Serial.println("[-] MAX30105 เริ่มต้นไม่สำเร็จ!");
+  bool foundPCF = false;
+  for (uint8_t addr = 1; addr < 127; addr++) {
+    Wire.beginTransmission(addr);
+    if (Wire.endTransmission() == 0) {
+      if (addr == 0x27 || addr == 0x3F || (addr >= 0x20 && addr <= 0x27)) {
+        pcfAddress = addr;
+        foundPCF = true;
+      }
+    }
+  }
+
+  if (foundPCF) {
+    Wire.beginTransmission(pcfAddress);
+    Wire.write(0xFF);
+    Wire.endTransmission();
+    Serial.print("✅ [PCF8574] เชื่อมต่อสำเร็จที่ Address: 0x");
+    Serial.println(pcfAddress, HEX);
   } else {
+    Serial.println("❌ [PCF8574] ไม่พบบอร์ด PCF8574 บน I2C!");
+  }
+
+  // 3. เริ่มต้น RFID RC522
+  SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, SS_PIN);
+  mfrc522.PCD_Init();
+  Serial.println("✅ [RFID RC522] เริ่มต้นโมดูลเรียบร้อย");
+
+  // 4. เริ่มต้น MAX30105
+  if (particleSensor.begin(Wire, I2C_SPEED_FAST)) {
     particleSensor.setup();
     particleSensor.setPulseAmplitudeRed(0x0A);
     particleSensor.setPulseAmplitudeGreen(0);
-    Serial.println("[+] MAX30105 Connected!");
-  }
-
-  // 2. เริ่มต้น DFPlayer Mini
-  if (!myDFPlayer.begin(mySerial)) {
-    Serial.println("[-] DFPlayer เริ่มต้นไม่สำเร็จ!");
+    Serial.println("✅ [MAX30105] เชื่อมต่อเซนเซอร์วัดชีพจรสำเร็จ");
   } else {
-    Serial.println("[+] DFPlayer Connected!");
-    myDFPlayer.volume(30);
+    Serial.println("❌ [MAX30105] ไม่พบเซนเซอร์ MAX30105!");
   }
 
-  // 3. เริ่ม Task ทำงานเบื้องหลัง (วัดชีพจร & HRV)
-  xTaskCreate(
-    breathingTask,
-    "BreathingLED_And_Pulse",
-    4096,
-    NULL,
-    1,
-    NULL);
+  // 5. เริ่มต้น DFPlayer Mini
+  if (myDFPlayer.begin(mySerial)) {
+    myDFPlayer.volume(13);
+    Serial.println("✅ [DFPlayer Mini] เชื่อมต่อเครื่องเล่นเสียงสำเร็จ (Volume 30)");
+  } else {
+    Serial.println("❌ [DFPlayer Mini] เชื่อมต่อไม่สำเร็จ (เช็กการต่อสาย TX/RX หรือ SD Card)");
+  }
 
-  Serial.println("Setup completed!");
+  printMenu();
 }
 
 void loop() {
-  if (digitalRead(BUTTON_START) == 0) {
-    if (!isBtnPressed) {
-      isBtnPressed = true;
-      delay(50);
-
-      if (!isRunning) {
-        isRunning = true;
-        Serial.println(">>> [START] เริ่มต้นการทำงาน!");
-        Assessment();
-      } else {
-        Serial.println(">>> [STOP] สั่งหยุดการทำงาน!");
-        resetSystem();
-        while (digitalRead(BUTTON_START) == 0) {
-          delay(10);
-        }
-        return;
-      }
-    }
-  } else {
-    isBtnPressed = false;
-  }
-  delay(20);
-}
-
-void Assessment() {
-  // รีเซ็ตค่าชีพจรและข้อมูล 3 ข้อก่อนเริ่มเซสชันใหม่
-  totalBeatSum = 0;
-  totalBeatCount = 0;
-  hrvCount = 0;
-  for (int k = 0; k < NUM_ASKED; k++) {
-    answers[k] = 0;
-    scores[k] = 0.0;
-    attempts[k] = 0;
-  }
-
-  // 1. สุ่มเลือกคำถาม 3 ข้อจาก 10 ข้อ (Fisher-Yates Shuffle)
-  int pool[10] = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
-  for (int i = 9; i > 0; i--) {
-    int j = random(0, i + 1);
-    int temp = pool[i];
-    pool[i] = pool[j];
-    pool[j] = temp;
-  }
-  for (int i = 0; i < NUM_ASKED; i++) {
-    selectedQ[i] = pool[i];
-  }
-
-  // 2. เล่นไฟล์ 11 (Intro) ก่อนเป็นเวลา 13 วินาที
-  playTrackAndWait(11, 13000);
-  if (!isRunning) return;
-
-  // 3. ลูปทำแบบประเมิน 3 ข้อที่สุ่มได้ (รอบแรก)
-  for (int i = 0; i < NUM_ASKED; i++) {
-    if (!isRunning) return;
-
-    int qIdx = selectedQ[i];  // ดรรชนีข้อใน SD Card (0 - 9)
-    attempts[i]++;
-
-    // เล่นไฟล์เสียงของข้อที่สุ่มได้
-    playTrackAndWait(qIdx + 1, trackDelays[qIdx]);
-    if (!isRunning) return;
-
-    wait_input_with_timeout(i);  // ส่งตำแหน่งช่องบันทึก (0, 1, 2)
-    if (!isRunning) return;
-
-    delay(300);
-  }
-
-  // 4. วนกลับมาถามซ้ำเฉพาะข้อที่ยังไม่ได้ตอบ (Timeout)
-  for (int i = 0; i < NUM_ASKED; i++) {
-    if (!isRunning) return;
-
-    if (answers[i] == 0) {
-      int qIdx = selectedQ[i];
-      Serial.print("\n>>> [RETRY] วนกลับมาถามคำถามลำดับที่ ");
-      Serial.print(i + 1);
-      Serial.print(" (ไฟล์เสียงที่ ");
-      Serial.print(qIdx + 1);
-      Serial.println(") อีกครั้ง...");
-
-      attempts[i]++;
-      playTrackAndWait(qIdx + 1, trackDelays[qIdx]);
-      if (!isRunning) return;
-
-      wait_input_with_timeout(i);
-      if (!isRunning) return;
-
-      delay(300);
-    }
-  }
-
-  // 5. สรุปผลลัพธ์และส่งข้อมูลออกทาง Serial
-  if (isRunning) {
-    Serial.println("\nทำครบ 3 ข้อแล้ว! กำลังส่งข้อมูลให้ Python...");
-    send();
-    resetSystem();
-  }
-}
-
-void playTrackAndWait(int trackNumber, unsigned long delayTime) {
-  if (!isRunning) return;
-
-  Serial.print("\n=== เริ่มเล่นไฟล์ที่ ");
-  Serial.print(trackNumber);
-  Serial.println(" ===");
-  myDFPlayer.play(trackNumber);
-
-  unsigned long startTrackTime = millis();
-  while (millis() - startTrackTime < delayTime) {
-    if (!isRunning) return;
-
-    if (digitalRead(BUTTON_START) == 0 && !isBtnPressed) {
-      isBtnPressed = true;
-      Serial.println(">>> [STOP] หยุดทำงานระหว่างเล่นเพลง!");
-      resetSystem();
-      while (digitalRead(BUTTON_START) == 0) {
-        delay(10);
-      }
-      return;
-    }
-    if (digitalRead(BUTTON_START) == 1) {
-      isBtnPressed = false;
-    }
-    delay(20);
-  }
-}
-
-bool wait_input_with_timeout(int i) {
-  if (!isRunning) return false;
-
-  Serial.println("--> ปลดล็อกปุ่ม: รอรับคำตอบ (สูงสุด 10 วินาที)...");
-  unsigned long startTime = millis();
-  bool hasSelected = false;
-
-  while (millis() - startTime < 10000) {
-    if (!isRunning) return false;
-
-    if (digitalRead(BUTTON_START) == 1) isBtnPressed = false;
-    if (digitalRead(BUTTON_START) == 0 && !isBtnPressed) {
-      isBtnPressed = true;
-      Serial.println(">>> [STOP] หยุดทำงานระหว่างรอคำตอบ!");
-      resetSystem();
-      return false;
-    }
-
-    int selectedBtn = 0;
-    if (digitalRead(BUTTON_HIGH) == 0) {
-      answers[i] = 3;
-      scores[i] = 50.0;
-      selectedBtn = BUTTON_HIGH;
-    } else if (digitalRead(BUTTON_MID) == 0) {
-      answers[i] = 2;
-      scores[i] = 33.33;
-      selectedBtn = BUTTON_MID;
-    } else if (digitalRead(BUTTON_LOW) == 0) {
-      answers[i] = 1;
-      scores[i] = 16.7;
-      selectedBtn = BUTTON_LOW;
-    }
-
-    if (selectedBtn != 0) {
-      hasSelected = true;
-      while (digitalRead(selectedBtn) == 0) {
-        delay(10);
-      }
-      delay(50);
-      break;
-    }
-    delay(20);
-  }
-
-  if (hasSelected) {
-    Serial.print("[+] บันทึกข้อมูลเรียบร้อย: ข้อที่ ");
-    Serial.print(i + 1);
-    Serial.print(" = ตอบ ");
-    Serial.println(answers[i]);
-    return true;
-  } else {
-    if (attempts[i] == 1) {
-      Serial.print("[-] หมดเวลาข้อที่ ");
-      Serial.print(i + 1);
-      Serial.println(" (รอบแรก) -> เตรียมเอากลับมาถามใหม่ท้ายสุด");
-    } else {
-      answers[i] = 0;
-      scores[i] = 0.0;
-      Serial.print("[-] หมดเวลาข้อที่ ");
-      Serial.print(i + 1);
-      Serial.println(" (รอบ Retry) -> บันทึกเป็น 0");
-    }
-    return false;
-  }
-}
-
-void send() {
-  if (totalBeatCount > 0) {
-    sessionAvgBpm = (float)totalBeatSum / totalBeatCount;
-  } else {
-    sessionAvgBpm = 0.0;
-  }
-
-  // คำนวณคะแนนเฉลี่ยคำถาม (%) จาก 3 ข้อ
-  float totalScore = 0;
-  for (int k = 0; k < NUM_ASKED; k++) {
-    totalScore += scores[k];
-  }
-  float avgQuestionScore = totalScore / (float)NUM_ASKED;
-
-  // ส่งผลลัพธ์ออก Serial Monitor (ส่งเฉพาะคำตอบ 3 ข้อ)
-  // โครงสร้าง: HW_RESULT|AvgBPM|RMSSD|HRVScore|QAvgScore|Ans1,Ans2,Ans3
-  Serial.print("HW_RESULT|");
-  Serial.print(sessionAvgBpm, 1);
-  Serial.print("|");
-  Serial.print(rmssd, 1);
-  Serial.print("|");
-  Serial.print(hrvScore);
-  Serial.print("|");
-  Serial.print(avgQuestionScore, 2);
-  Serial.print("|");
-
-  for (int k = 0; k < NUM_ASKED; k++) {
-    Serial.print(answers[k]);
-    if (k < NUM_ASKED - 1) Serial.print(",");
-  }
-  Serial.println();
-}
-
-void resetSystem() {
-  isRunning = false;
-  myDFPlayer.stop();
-  for (int k = 0; k < NUM_ASKED; k++) {
-    answers[k] = 0;
-    scores[k] = 0.0;
-    attempts[k] = 0;
-  }
-  Serial.println("--- รีเซ็ตระบบ รอรับแบบประเมินถัดไป ---");
-  delay(300);
-}
-
-// ==================== FreeRTOS Background Task ====================
-void breathingTask(void *pvParameters) {
-  while (1) {
-    long irValue = particleSensor.getIR();
-
-    if (irValue > 50000) {
-      if (checkForBeat(irValue) == true) {
-        unsigned long currentMicros = micros();
-        float delta = (currentMicros - lastBeat) / 1000.0;
-        lastBeat = currentMicros;
-        beatsPerMinute = 60.0 / (delta / 1000.0);
-
-        if (beatsPerMinute < 150.0 && beatsPerMinute > 50.0) {
-          totalBeatSum += beatsPerMinute;
-          totalBeatCount++;
-
-          if (hrvCount < HRV_SIZE) {
-            rrIntervals[hrvCount++] = delta;
-          } else {
-            for (byte i = 0; i < HRV_SIZE - 1; i++) {
-              rrIntervals[i] = rrIntervals[i + 1];
-            }
-            rrIntervals[HRV_SIZE - 1] = delta;
-          }
-
-          if (hrvCount >= 2) {
-            float sumSquaredDiff = 0.0;
-            for (byte i = 0; i < hrvCount - 1; i++) {
-              float diff = rrIntervals[i + 1] - rrIntervals[i];
-              sumSquaredDiff += (diff * diff);
-            }
-            rmssd = sqrt(sumSquaredDiff / (hrvCount - 1));
-            float rawScore = ((60.0 - rmssd) / 45.0) * 100.0;
-            hrvScore = (int)constrain(rawScore, 0.0, 100.0);
-          }
-        }
-      }
-    } else {
-      beatsPerMinute = 0;
-    }
-
-    vTaskDelay(pdMS_TO_TICKS(10));
-  }
+  testButtons();             // 1. อ่านปุ่มกด PCF8574
+  testRFID();                // 2. อ่านการแตะบัตร RFID
+  testMAX30105();            // 3. อ่านค่าเซนเซอร์ชีพจร
+  handleSerialCommands();    // 4. รับคำสั่งทดสอบทาง Serial (เล่นเพลง/คุม LED)
+  
+  delay(10);
 }

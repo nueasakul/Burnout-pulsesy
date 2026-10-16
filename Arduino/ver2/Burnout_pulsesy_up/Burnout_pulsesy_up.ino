@@ -7,17 +7,24 @@
 #include <MFRC522.h>
 
 // ==================== Pin Definitions ====================
-#define SDA_PIN 6
-#define SCL_PIN 7
+#define LED1_PIN 25
+#define LED2_PIN 26
+#define LED3_PIN 27
 
-#define DFPLAYER_RX 1  // ESP32 RX <- DFPlayer TX
-#define DFPLAYER_TX 0  // ESP32 TX -> DFPlayer RX
+#define RELAY_PIN 33
 
-#define SS_PIN 5
-#define RST_PIN 2
-#define SCK_PIN 8
-#define MOSI_PIN 9
-#define MISO_PIN 10
+#define SDA_PIN 21
+#define SCL_PIN 22
+
+#define DFPLAYER_RX 16  // ESP32 RX2 (GPIO 16) <- DFPlayer TX
+#define DFPLAYER_TX 17  // ESP32 TX2 (GPIO 17) -> DFPlayer RX
+
+#define SS_PIN 5     // SDA / CS
+#define RST_PIN 4    // RST
+#define SCK_PIN 18   // SCK
+#define MISO_PIN 15  // MISO
+#define MOSI_PIN 19  // MOSI
+
 MFRC522 mfrc522(SS_PIN, RST_PIN);
 SemaphoreHandle_t i2cMutex = NULL;
 
@@ -100,6 +107,15 @@ void setup() {
   i2cMutex = xSemaphoreCreateMutex();
   randomSeed(esp_random());
 
+  pinMode(LED1_PIN, OUTPUT);
+  pinMode(LED2_PIN, OUTPUT);
+  pinMode(LED3_PIN, OUTPUT);
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(LED1_PIN, 0);
+  digitalWrite(LED2_PIN, 0);
+  digitalWrite(LED3_PIN, 0);
+  digitalWrite(RELAY_PIN, 0);
+
   SPI.begin(SCK_PIN, MISO_PIN, MOSI_PIN, SS_PIN);
   mfrc522.PCD_Init();
   Wire.begin(SDA_PIN, SCL_PIN);
@@ -153,11 +169,6 @@ void loop() {
     }
     readUID.toUpperCase();
     readUID.trim();  // ตัดช่องว่างหัว-ท้ายออก
-
-    // แสดงค่า UID ที่อ่านได้
-    // Serial.print("📌 บัตรที่แตะ UID: [");
-    // Serial.print(readUID);
-    // Serial.println("]");
 
     mfrc522.PICC_HaltA();
     mfrc522.PCD_StopCrypto1();
@@ -216,6 +227,8 @@ void loop() {
 void Assessment() {
   // 🟢 ส่งสัญญาณบอก Python ให้เริ่มเปิดกล้อง
   Serial.println("SYSTEM_START");
+  digitalWrite(LED1_PIN, 1);
+  digitalWrite(RELAY_PIN, 1);
   playTrackAndWait(12, 2000);
 
   while (true) {
@@ -239,6 +252,7 @@ void Assessment() {
       String response = Serial.readStringUntil('\n');
       response.trim();
       if (response == "END_CAMERA") {
+        digitalWrite(RELAY_PIN, 0);
         break;
       }
     }
@@ -247,6 +261,7 @@ void Assessment() {
 
   // รีเซ็ตค่าชีพจรและข้อมูล 3 ข้อก่อนเริ่มเซสชันใหม่
   Serial.println("เริ่มวัดชีพจร!");
+  digitalWrite(LED2_PIN, 1);
 
   totalBeatSum = 0;
   totalBeatCount = 0;
@@ -279,6 +294,7 @@ void Assessment() {
   }
 
   // เล่นไฟล์ 11 (Intro) ก่อนเป็นเวลา 13 วินาที
+  digitalWrite(LED3_PIN, 1);
   playTrackAndWait(11, 13000);
   if (!isRunning) return;
 
@@ -327,11 +343,10 @@ void Assessment() {
 void playTrackAndWait(int trackNumber, unsigned long delayTime) {
   if (!isRunning) return;
 
-  Serial.print("กำลังเล่นไฟล์ที่: ");
-  Serial.println(trackNumber);
-  return;
+  // Serial.print("กำลังเล่นไฟล์ที่: ");
+  // Serial.println(trackNumber);
 
-  // myDFPlayer.play(trackNumber);
+  myDFPlayer.play(trackNumber);
 
   unsigned long startTrackTime = millis();
   while (millis() - startTrackTime < delayTime) {
@@ -342,7 +357,7 @@ void playTrackAndWait(int trackNumber, unsigned long delayTime) {
       isBtnPressed = true;
       resetSystem();
       while (readButtons().start) {
-       delay(10);
+        delay(10);
       }
       playTrackAndWait(16, 5000);
       return;
@@ -465,6 +480,10 @@ void resetSystem() {
   isRunning = false;
   isBtnPressed = false;
   Pulseruning = false;
+  digitalWrite(LED1_PIN, 0);
+  digitalWrite(LED2_PIN, 0);
+  digitalWrite(LED3_PIN, 0);
+  digitalWrite(RELAY_PIN, 0);
   myDFPlayer.stop();
   for (int k = 0; k < NUM_ASKED; k++) {
     answers[k] = 0;
@@ -524,8 +543,7 @@ void breathingTask(void *pvParameters) {
       } else {
         beatsPerMinute = 0;
       }
-
-      vTaskDelay(pdMS_TO_TICKS(10));
     }
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }

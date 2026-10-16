@@ -7,7 +7,7 @@ from ultralytics import YOLO
 import mysql.connector
 
 # ==================== 1. ตั้งค่า Serial Port & DB ====================
-SERIAL_PORT = 'COM5'   # ⚠️ เปลี่ยนพอร์ต COM ให้ตรงกับ ESP32-C3
+SERIAL_PORT = 'COM7'   # ⚠️ เปลี่ยนพอร์ต COM ให้ตรงกับ ESP32-C3
 BAUD_RATE = 115200
 
 DB_CONFIG = {
